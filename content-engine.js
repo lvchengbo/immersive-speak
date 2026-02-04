@@ -33,6 +33,9 @@
   // ─── Mini-player state ─────────────────────────────────────────────
   let miniPlayerEl = null;
 
+  // ─── Aria-live region ──────────────────────────────────────────────
+  let ariaLiveRegion = null;
+
   const SPEECH_ICON_PLAY = '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M4 2l10 6-10 6z"/></svg>';
   const SPEECH_ICON_PAUSE = '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M3 1h3v14H3zm7 0h3v14h-3z"/></svg>';
   const SPEECH_ICON_LOADING = '<svg viewBox="0 0 16 16" width="12" height="12" class="groq-tts-speech-spin"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="25 12"/></svg>';
@@ -1878,8 +1881,6 @@
   }
 
   // ─── Accessible aria-live region ───────────────────────────────────
-
-  let ariaLiveRegion = null;
 
   function injectAriaLiveRegion() {
     if (ariaLiveRegion) return;
