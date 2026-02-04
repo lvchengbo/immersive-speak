@@ -1,0 +1,89 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Immersive Speak Options</title>
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <main class="wrap">
+    <h1>Immersive Speak</h1>
+    <p class="sub">Set your Groq API key and defaults for speech with word highlighting.</p>
+
+    <form id="options-form">
+      <label>
+        <span>Groq API Key</span>
+        <input type="password" id="api_key" placeholder="gsk_..." autocomplete="off" />
+      </label>
+
+      <div class="grid">
+        <label>
+          <span>TTS Model</span>
+          <input type="text" id="tts_model" placeholder="canopylabs/orpheus-v1-english" />
+        </label>
+
+        <label>
+          <span>Voice</span>
+          <input type="text" id="tts_voice" placeholder="troy" />
+        </label>
+
+        <label>
+          <span>Audio Format</span>
+          <select id="tts_format">
+            <option value="wav">wav</option>
+            <option value="mp3">mp3</option>
+            <option value="opus">opus</option>
+            <option value="aac">aac</option>
+            <option value="flac">flac</option>
+          </select>
+        </label>
+
+        <label>
+          <span>STT Model</span>
+          <input type="text" id="stt_model" placeholder="whisper-large-v3-turbo" />
+        </label>
+
+        <label>
+          <span>STT Language (optional)</span>
+          <input type="text" id="stt_language" placeholder="en" />
+        </label>
+
+        <label>
+          <span>Max Characters per Chunk</span>
+          <input type="number" id="max_chars" min="50" max="1000" step="10" />
+        </label>
+
+        <label>
+          <span>Agent Model</span>
+          <input type="text" id="agent_model" placeholder="moonshotai/kimi-k2-instruct-0905" />
+        </label>
+      </div>
+
+      <label class="checkbox">
+        <input type="checkbox" id="auto_speak" />
+        <span>Auto-speak when I select a paragraph</span>
+      </label>
+
+      <label class="checkbox">
+        <input type="checkbox" id="agent_mode" />
+        <span>Use agent to pick readable content on toolbar click</span>
+      </label>
+
+      <label class="checkbox">
+        <input type="checkbox" id="speech_mode" />
+        <span>Speech mode: add play button instead of immersive highlighting</span>
+      </label>
+
+      <div class="actions">
+        <button type="submit">Save</button>
+        <button type="button" id="reset-btn" class="secondary">Reset to Defaults</button>
+        <span id="status" role="status" aria-live="polite"></span>
+      </div>
+    </form>
+  </main>
+
+  <script src="shared.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "Immersive Speak",
+  "minimum_chrome_version": "105",
+  "version": "0.2.0",
+  "description": "Pick any element to hear it read aloud with word-by-word highlighting.",
+  "permissions": [
+    "storage",
+    "debugger",
+    "activeTab",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://api.groq.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_page": "options.html",
+  "action": {
+    "default_title": "Immersive Speak",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["shared.js", "content-stub.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
