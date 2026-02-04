@@ -396,10 +396,20 @@ chrome.runtime.setUninstallURL("https://forms.gle/immersive-speak-feedback");
 
 const injectEngine = async (tabId) => {
   try {
-    // Ensure shared.js globals exist (needed for pre-existing tabs after install/reload)
+    const files = ["content-engine.js"];
+    // Only inject shared.js if globals are missing (pre-existing tabs after install/reload)
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => typeof GROQ_DEFAULTS !== "undefined"
+      });
+      if (!results?.[0]?.result) files.unshift("shared.js");
+    } catch (_) {
+      files.unshift("shared.js");
+    }
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ["shared.js", "content-engine.js"]
+      files
     });
   } catch (err) {
     console.warn("[Immersive Speak] engine injection:", err);
