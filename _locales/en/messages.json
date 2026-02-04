@@ -1,0 +1,154 @@
+{
+  "extName": {
+    "message": "Immersive Speak"
+  },
+  "extDescription": {
+    "message": "Pick any element to hear it read aloud with word-by-word highlighting."
+  },
+  "optionsTitle": {
+    "message": "Immersive Speak"
+  },
+  "optionsSubtitle": {
+    "message": "Set your Groq API key and defaults for speech with word highlighting."
+  },
+  "labelApiKey": {
+    "message": "Groq API Key"
+  },
+  "labelTtsModel": {
+    "message": "TTS Model"
+  },
+  "labelVoice": {
+    "message": "Voice"
+  },
+  "labelAudioFormat": {
+    "message": "Audio Format"
+  },
+  "labelSttModel": {
+    "message": "STT Model"
+  },
+  "labelSttLanguage": {
+    "message": "STT Language (auto-detected)"
+  },
+  "labelMaxChars": {
+    "message": "Max Characters per Chunk"
+  },
+  "labelAgentModel": {
+    "message": "Agent Model"
+  },
+  "labelAutoSpeak": {
+    "message": "Auto-speak when I select a paragraph"
+  },
+  "labelAgentMode": {
+    "message": "Use agent to pick readable content on toolbar click"
+  },
+  "labelSpeechMode": {
+    "message": "Speech mode: add play button instead of immersive highlighting"
+  },
+  "labelAnalyticsOptIn": {
+    "message": "Share anonymous usage analytics to improve the extension"
+  },
+  "btnSave": {
+    "message": "Save"
+  },
+  "btnReset": {
+    "message": "Reset to Defaults"
+  },
+  "statusSaved": {
+    "message": "Saved"
+  },
+  "statusDefaultsRestored": {
+    "message": "Defaults restored"
+  },
+  "cacheTitle": {
+    "message": "Audio Cache"
+  },
+  "cacheDescription": {
+    "message": "Cached TTS results are stored locally to speed up repeated playback."
+  },
+  "btnClearCache": {
+    "message": "Clear Cache"
+  },
+  "cacheCleared": {
+    "message": "Cache cleared"
+  },
+  "cacheEntries": {
+    "message": "$COUNT$ entries",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "toastGenerating": {
+    "message": "Generating speech..."
+  },
+  "toastAnalyzing": {
+    "message": "Analyzing page..."
+  },
+  "toastNoElement": {
+    "message": "No element was selected."
+  },
+  "toastNoText": {
+    "message": "Selected element has no text."
+  },
+  "toastNoContent": {
+    "message": "No readable content found."
+  },
+  "toastAgentEmpty": {
+    "message": "Agent selection empty."
+  },
+  "toastAgentFallback": {
+    "message": "Agent returned no results. Reading top sections."
+  },
+  "toastAgentDisabled": {
+    "message": "Agent mode is disabled in options."
+  },
+  "toastPickerHint": {
+    "message": "Click any element to read it aloud. Press Esc to cancel."
+  },
+  "toastAudioBlocked": {
+    "message": "Audio playback is blocked. Click Resume or the page to continue."
+  },
+  "toastAudioFailed": {
+    "message": "Audio playback failed. Try again."
+  },
+  "toastConnectionLost": {
+    "message": "Connection to background lost."
+  },
+  "toastMissingKey": {
+    "message": "Missing Groq API key. Set it in the extension options."
+  },
+  "toastNoTextProvided": {
+    "message": "No text provided."
+  },
+  "btnResume": {
+    "message": "Resume"
+  },
+  "ariaListen": {
+    "message": "Listen"
+  },
+  "ariaPause": {
+    "message": "Pause"
+  },
+  "ariaResume": {
+    "message": "Resume"
+  },
+  "ariaLoading": {
+    "message": "Loading..."
+  },
+  "miniPlayerPlay": {
+    "message": "Play"
+  },
+  "miniPlayerPause": {
+    "message": "Pause"
+  },
+  "miniPlayerPrev": {
+    "message": "Previous"
+  },
+  "miniPlayerNext": {
+    "message": "Next"
+  },
+  "miniPlayerStop": {
+    "message": "Stop"
+  }
+}

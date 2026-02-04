@@ -47,10 +47,34 @@
     }
   });
 
-  // --- Handle toolbar-click activation from background ---
+  // --- Handle messages from background ---
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (!msg) return false;
+
+    // Picker messages — forward to engine if loaded, otherwise queue
+    if (msg.type === GROQ_MESSAGES.PICKER_START) {
+      if (engineLoaded && window.__groqTtsEngine) {
+        window.__groqTtsEngine.startPicker();
+        sendResponse({ ok: true });
+        return false;
+      }
+      window.__groqTtsStub.pending = { type: GROQ_MESSAGES.PICKER_START };
+      ensureEngine();
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    if (msg.type === GROQ_MESSAGES.PICKER_STOP) {
+      if (engineLoaded && window.__groqTtsEngine) {
+        window.__groqTtsEngine.stopPicker();
+      }
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    // Original activation messages
     if (engineLoaded) return false;
-    if (!msg || (msg.type !== GROQ_MESSAGES.START && msg.type !== GROQ_MESSAGES.AGENT_START)) return false;
+    if (msg.type !== GROQ_MESSAGES.START && msg.type !== GROQ_MESSAGES.AGENT_START) return false;
 
     window.__groqTtsStub.pending = { type: msg.type };
     ensureEngine();

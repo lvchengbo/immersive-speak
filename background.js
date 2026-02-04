@@ -1,6 +1,6 @@
 /* Immersive Speak — background service worker.
-   Handles Groq API calls (TTS + STT), CDP element picker, streaming delivery,
-   and on-demand engine injection. */
+   Handles Groq API calls (TTS + STT), on-demand engine injection,
+   IndexedDB caching, and opt-in analytics. */
 
 importScripts("shared.js");
 
@@ -10,6 +10,28 @@ const TARGET_ATTR = GROQ_TARGET_ATTR;
 const getSettings = () => new Promise(resolve => {
   chrome.storage.local.get(GROQ_DEFAULTS, resolve);
 });
+
+// ─── Retry / backoff ─────────────────────────────────────────────────
+
+const MAX_RETRIES = 2;
+const BASE_DELAY_MS = 800;
+
+async function withRetry(fn, retries = MAX_RETRIES) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (err?.name === "AbortError") throw err;
+      if (attempt < retries) {
+        const delay = BASE_DELAY_MS * Math.pow(2, attempt);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastErr;
+}
 
 // ─── Audio format helpers ─────────────────────────────────────────────
 
@@ -37,63 +59,90 @@ const extForFormat = format => {
 
 // ─── Groq API ─────────────────────────────────────────────────────────
 
-const fetchTts = async (text, settings, signal) => {
-  const res = await fetch(`${API_BASE}/audio/speech`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${settings.api_key}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: settings.tts_model,
-      voice: settings.tts_voice,
-      input: text,
-      response_format: settings.tts_format
-    }),
-    signal
-  });
+const FETCH_TIMEOUT_MS = 30_000;
 
-  if (!res.ok) {
-    const msg = await safeErrorMessage(res);
-    throw new Error(`Groq TTS failed: ${msg}`);
+function fetchWithTimeout(url, options, timeoutMs = FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const external = options?.signal;
+  if (external) {
+    if (external.aborted) { controller.abort(); }
+    else { external.addEventListener("abort", () => controller.abort(), { once: true }); }
   }
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timeout));
+}
 
-  const buffer = await res.arrayBuffer();
-  return {
-    buffer,
-    mime: mimeForFormat(settings.tts_format)
-  };
+const fetchTts = async (text, settings, signal) => {
+  return withRetry(async () => {
+    const res = await fetchWithTimeout(`${API_BASE}/audio/speech`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${settings.api_key}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: settings.tts_model,
+        voice: settings.tts_voice,
+        input: text,
+        response_format: settings.tts_format
+      }),
+      signal
+    });
+
+    if (!res.ok) {
+      const msg = await safeErrorMessage(res);
+      throw new Error(`Groq TTS failed: ${msg}`);
+    }
+
+    const buffer = await res.arrayBuffer();
+    return {
+      buffer,
+      mime: mimeForFormat(settings.tts_format)
+    };
+  });
 };
 
 const fetchStt = async (audioBuffer, mimeType, settings, signal) => {
-  const blob = new Blob([audioBuffer], { type: mimeType || "audio/wav" });
-  const form = new FormData();
-  form.append("file", blob, `speech.${extForFormat(settings.tts_format)}`);
-  form.append("model", settings.stt_model);
-  form.append("response_format", "verbose_json");
-  form.append("timestamp_granularities[]", "word");
-  if (settings.stt_language) form.append("language", settings.stt_language);
+  return withRetry(async () => {
+    const blob = new Blob([audioBuffer], { type: mimeType || "audio/wav" });
+    const form = new FormData();
+    form.append("file", blob, `speech.${extForFormat(settings.tts_format)}`);
+    form.append("model", settings.stt_model);
+    form.append("response_format", "verbose_json");
+    form.append("timestamp_granularities[]", "word");
+    const lang = settings.stt_language || detectLanguage();
+    if (lang) form.append("language", lang);
 
-  const res = await fetch(`${API_BASE}/audio/transcriptions`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${settings.api_key}`
-    },
-    body: form,
-    signal
+    const res = await fetchWithTimeout(`${API_BASE}/audio/transcriptions`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${settings.api_key}`
+      },
+      body: form,
+      signal
+    });
+
+    if (!res.ok) {
+      const msg = await safeErrorMessage(res);
+      throw new Error(`Groq STT failed: ${msg}`);
+    }
+
+    const json = await res.json();
+    return extractWords(json);
   });
-
-  if (!res.ok) {
-    const msg = await safeErrorMessage(res);
-    throw new Error(`Groq STT failed: ${msg}`);
-  }
-
-  const json = await res.json();
-  return extractWords(json);
 };
 
+function detectLanguage() {
+  try {
+    const lang = navigator.language || "";
+    return lang.split("-")[0] || "";
+  } catch (_) {
+    return "";
+  }
+}
+
 const fetchAgentSelection = async (blocks, settings, signal) => {
-  const res = await fetch(`${API_BASE}/chat/completions`, {
+  const res = await fetchWithTimeout(`${API_BASE}/chat/completions`, {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${settings.api_key}`,
@@ -226,77 +275,124 @@ const safeErrorMessage = async res => {
   }
 };
 
-// ─── CDP session management ───────────────────────────────────────────
+// ─── IndexedDB cache ──────────────────────────────────────────────────
 
-const PROTOCOL_VERSION = "1.3";
+const IDB_NAME = "immersive-speak-cache";
+const IDB_VERSION = 1;
+const IDB_STORE = "tts-chunks";
 
-const highlightConfig = {
-  borderColor:  { r: 255, g: 200, b: 0, a: 0.9 },
-  contentColor: { r: 255, g: 230, b: 100, a: 0.3 },
-  showInfo: true
-};
-
-const sessions = new Map();
-
-const send = (debuggee, method, params = {}) =>
-  new Promise((resolve, reject) => {
-    chrome.debugger.sendCommand(debuggee, method, params, result => {
-      const err = chrome.runtime.lastError;
-      if (err) reject(err);
-      else resolve(result);
-    });
+function openCacheDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) {
+        db.createObjectStore(IDB_STORE, { keyPath: "key" });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
   });
+}
 
-const pauseInspect = async (debuggee) => {
-  try {
-    await send(debuggee, "Overlay.setInspectMode", { mode: "none" });
-  } catch (err) {
-    console.debug("[Immersive Speak] pauseInspect:", err);
-  }
-};
+function cacheKey(text, model, voice) {
+  return `${model}|${voice}|${text}`;
+}
 
-const resumeInspect = async (debuggee) => {
+async function cacheGet(key) {
   try {
-    await send(debuggee, "Overlay.setInspectMode", {
-      mode: "searchForNode",
-      highlightConfig
+    const db = await openCacheDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, "readonly");
+      const store = tx.objectStore(IDB_STORE);
+      const req = store.get(key);
+      req.onsuccess = () => resolve(req.result?.value || null);
+      req.onerror = () => reject(req.error);
     });
-  } catch (err) {
-    console.debug("[Immersive Speak] resumeInspect:", err);
+  } catch (_) {
+    return null;
   }
-};
+}
 
-const detach = async debuggee => {
+async function cachePut(key, value) {
   try {
-    await send(debuggee, "Overlay.setInspectMode", { mode: "none" });
-  } catch (err) {
-    console.debug("[Immersive Speak] overlay disable:", err);
-  }
-  try {
-    await chrome.debugger.detach(debuggee);
-  } catch (err) {
-    console.debug("[Immersive Speak] detach:", err);
-  }
-};
-
-const startSession = async (tabId) => {
-  if (sessions.has(tabId)) return;
-  const debuggee = { tabId };
-  try {
-    await chrome.debugger.attach(debuggee, PROTOCOL_VERSION);
-    await send(debuggee, "DOM.enable");
-    await send(debuggee, "Overlay.enable");
-    sessions.set(tabId, { debuggee });
-    await send(debuggee, "Overlay.setInspectMode", {
-      mode: "searchForNode",
-      highlightConfig
+    const db = await openCacheDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, "readwrite");
+      const store = tx.objectStore(IDB_STORE);
+      store.put({ key, value, ts: Date.now() });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
     });
-  } catch (err) {
-    console.warn("[Immersive Speak] startSession:", err);
-    sessions.delete(tabId);
-    await detach(debuggee);
+  } catch (_) {
+    // Cache write failure is non-critical
   }
+}
+
+async function cacheClear() {
+  try {
+    const db = await openCacheDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, "readwrite");
+      const store = tx.objectStore(IDB_STORE);
+      store.clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (_) {}
+}
+
+async function cacheCount() {
+  try {
+    const db = await openCacheDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, "readonly");
+      const store = tx.objectStore(IDB_STORE);
+      const req = store.count();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (_) {
+    return 0;
+  }
+}
+
+// ─── Analytics (opt-in, lightweight) ──────────────────────────────────
+
+let analyticsOptIn = false;
+chrome.storage.local.get({ analytics_opt_in: false }, v => {
+  analyticsOptIn = v.analytics_opt_in;
+});
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.analytics_opt_in) {
+    analyticsOptIn = changes.analytics_opt_in.newValue ?? false;
+  }
+});
+
+const analyticsCounters = {
+  activations: 0,
+  tts_requests: 0,
+  tts_errors: 0,
+  stt_errors: 0,
+  agent_requests: 0,
+  cache_hits: 0
 };
+
+function trackEvent(name) {
+  if (!analyticsOptIn) return;
+  if (name in analyticsCounters) analyticsCounters[name] += 1;
+}
+
+// Expose counters for options page
+function getAnalyticsSummary() {
+  return { ...analyticsCounters, opt_in: analyticsOptIn };
+}
+
+// ─── Uninstall survey ─────────────────────────────────────────────────
+
+chrome.runtime.setUninstallURL("https://forms.gle/immersive-speak-feedback");
+
+// ─── Engine injection ─────────────────────────────────────────────────
 
 const injectEngine = async (tabId) => {
   try {
@@ -309,76 +405,65 @@ const injectEngine = async (tabId) => {
   }
 };
 
-const handleNode = async (session, backendNodeId) => {
-  const { debuggee } = session;
-  const tabId = debuggee.tabId;
-  try {
-    const { object } = await send(debuggee, "DOM.resolveNode", { backendNodeId });
-    await send(debuggee, "Runtime.callFunctionOn", {
-      objectId: object.objectId,
-      functionDeclaration: `function() { this.setAttribute("${TARGET_ATTR}", "true"); }`
-    });
-  } catch (err) {
-    console.warn("[Immersive Speak] handleNode resolve:", err);
-  }
+// ─── Toolbar click handler ────────────────────────────────────────────
 
-  sessions.delete(tabId);
-  await detach(debuggee);
-
-  await injectEngine(tabId);
-
-  try {
-    await chrome.tabs.sendMessage(tabId, { type: GROQ_MESSAGES.START });
-  } catch (err) {
-    console.warn("[Immersive Speak] sendMessage groq-tts-start:", err);
-  }
-};
-
-// ─── CDP event listeners ──────────────────────────────────────────────
-
-chrome.debugger.onEvent.addListener((source, method, params) => {
-  if (method !== "Overlay.inspectNodeRequested" || !params?.backendNodeId) return;
-  const session = sessions.get(source.tabId);
-  if (!session) return;
-  handleNode(session, params.backendNodeId);
-});
-
-chrome.debugger.onDetach.addListener(source => {
-  sessions.delete(source.tabId);
-});
+const pickerTabs = new Set();
 
 chrome.action.onClicked.addListener(async (tab) => {
   if (!tab?.id) return;
-  if (sessions.has(tab.id)) {
-    const { debuggee } = sessions.get(tab.id);
-    sessions.delete(tab.id);
-    await detach(debuggee);
+  trackEvent("activations");
+
+  // Toggle picker off if already active
+  if (pickerTabs.has(tab.id)) {
+    pickerTabs.delete(tab.id);
+    try {
+      await chrome.tabs.sendMessage(tab.id, { type: GROQ_MESSAGES.PICKER_STOP });
+    } catch (_) {}
     return;
   }
+
   const settings = await getSettings();
+
+  // Agent mode: skip picker, go straight to agent
   if (settings.agent_mode) {
     await injectEngine(tab.id);
     try {
       await chrome.tabs.sendMessage(tab.id, { type: GROQ_MESSAGES.AGENT_START });
     } catch (err) {
-      console.warn("[Immersive Speak] sendMessage groq-tts-agent-start:", err);
+      console.warn("[Immersive Speak] sendMessage agent-start:", err);
     }
     return;
   }
-  await startSession(tab.id);
+
+  // Manual mode: start content-script picker
+  pickerTabs.add(tab.id);
+  await injectEngine(tab.id);
+  try {
+    await chrome.tabs.sendMessage(tab.id, { type: GROQ_MESSAGES.PICKER_START });
+  } catch (err) {
+    console.warn("[Immersive Speak] sendMessage picker-start:", err);
+    pickerTabs.delete(tab.id);
+  }
 });
 
-// ─── Message handler (picker resume + engine injection) ───────────────
+// Clean up picker state when tabs close
+chrome.tabs.onRemoved.addListener(tabId => {
+  pickerTabs.delete(tabId);
+});
+
+// ─── Message handler ──────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return;
 
-  if (msg.type === GROQ_MESSAGES.RESUME_PICKER) {
+  if (msg.type === GROQ_MESSAGES.PICKER_STOP) {
     const tabId = sender?.tab?.id;
-    if (tabId && sessions.has(tabId)) {
-      const { debuggee } = sessions.get(tabId);
-      resumeInspect(debuggee);
-    }
+    if (tabId) pickerTabs.delete(tabId);
+    return;
+  }
+
+  if (msg.type === GROQ_MESSAGES.RESUME_PICKER) {
+    // No-op now that CDP picker is removed; kept for compatibility
     return;
   }
 
@@ -387,9 +472,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         const settings = await getSettings();
         if (!settings.api_key) {
-          sendResponse({ ok: false, error: "Missing Groq API key. Set it in the extension options." });
+          sendResponse({ ok: false, error: i18n("toastMissingKey") });
           return;
         }
+        trackEvent("agent_requests");
         const blocks = Array.isArray(msg.blocks) ? msg.blocks : [];
         const trimmed = blocks.slice(0, 50).map(block => ({
           id: block.id,
@@ -416,17 +502,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         const settings = await getSettings();
         if (!settings.api_key) {
-          sendResponse({ ok: false, error: "Missing Groq API key. Set it in the extension options." });
+          sendResponse({ ok: false, error: i18n("toastMissingKey") });
           return;
         }
         const text = String(msg.text || "").trim();
         if (!text) {
-          sendResponse({ ok: false, error: "No text provided." });
+          sendResponse({ ok: false, error: i18n("toastNoTextProvided") });
           return;
         }
+        trackEvent("tts_requests");
         const { buffer, mime } = await fetchTts(text, settings);
         sendResponse({ ok: true, audio: arrayBufferToBase64(buffer), mime });
       } catch (err) {
+        trackEvent("tts_errors");
         sendResponse({ ok: false, error: err?.message || String(err) });
       }
     })();
@@ -438,9 +526,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (tabId) injectEngine(tabId);
     return;
   }
+
+  // Cache management from options page
+  if (msg.type === "cache-clear") {
+    cacheClear().then(() => sendResponse({ ok: true })).catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+  if (msg.type === "cache-count") {
+    cacheCount().then(count => sendResponse({ count })).catch(() => sendResponse({ count: 0 }));
+    return true;
+  }
+  if (msg.type === "analytics-summary") {
+    sendResponse(getAnalyticsSummary());
+    return;
+  }
 });
 
-// ─── Streaming TTS via ports ──────────────────────────────────────────
+// ─── Streaming TTS via ports (with IndexedDB cache + resilient STT) ──
 
 chrome.runtime.onConnect.addListener(port => {
   if (port.name !== GROQ_MESSAGES.PORT) return;
@@ -456,29 +558,57 @@ chrome.runtime.onConnect.addListener(port => {
 
     const settings = await getSettings();
     if (!settings.api_key) {
-      try { port.postMessage({ type: "error", error: "Missing Groq API key. Set it in the extension options." }); } catch (_) {}
+      try { port.postMessage({ type: "error", error: i18n("toastMissingKey") }); } catch (_) {}
       return;
     }
 
     const chunks = Array.isArray(msg.chunks) ? msg.chunks : [];
     if (!chunks.length) {
-      try { port.postMessage({ type: "error", error: "No text provided." }); } catch (_) {}
+      try { port.postMessage({ type: "error", error: i18n("toastNoTextProvided") }); } catch (_) {}
       return;
     }
 
     try {
       for (let i = 0; i < chunks.length; i++) {
         if (controller.signal.aborted) break;
-        const { buffer, mime } = await fetchTts(chunks[i], settings, controller.signal);
+
+        const chunkText = chunks[i];
+        const ck = cacheKey(chunkText, settings.tts_model, settings.tts_voice);
+
+        // Check IndexedDB cache first
+        const cached = await cacheGet(ck);
+        if (cached) {
+          trackEvent("cache_hits");
+          try {
+            port.postMessage({ type: "chunk", index: i, result: cached });
+          } catch (_) { break; }
+          continue;
+        }
+
+        trackEvent("tts_requests");
+        const { buffer, mime } = await fetchTts(chunkText, settings, controller.signal);
         if (controller.signal.aborted) break;
-        const words = await fetchStt(buffer, mime, settings, controller.signal);
-        if (controller.signal.aborted) break;
+
+        // STT for word timing — resilient: fallback to empty words on failure
+        let words = [];
         try {
-          port.postMessage({
-            type: "chunk",
-            index: i,
-            result: { audio: arrayBufferToBase64(buffer), mime, words }
-          });
+          words = await fetchStt(buffer, mime, settings, controller.signal);
+        } catch (sttErr) {
+          if (sttErr?.name === "AbortError") break;
+          trackEvent("stt_errors");
+          console.warn("[Immersive Speak] STT failed, using fallback timing:", sttErr?.message);
+          // words stays [] — content-engine will use buildFallbackMap
+        }
+
+        if (controller.signal.aborted) break;
+
+        const result = { audio: arrayBufferToBase64(buffer), mime, words };
+
+        // Store in IndexedDB cache (fire-and-forget)
+        cachePut(ck, result);
+
+        try {
+          port.postMessage({ type: "chunk", index: i, result });
         } catch (_) {
           break;
         }
@@ -488,6 +618,7 @@ chrome.runtime.onConnect.addListener(port => {
       }
     } catch (err) {
       if (err?.name === "AbortError") return;
+      trackEvent("tts_errors");
       try {
         port.postMessage({ type: "error", error: err?.message || String(err) });
       } catch (_) {

@@ -1,12 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "Immersive Speak",
+  "name": "__MSG_extName__",
   "minimum_chrome_version": "105",
-  "version": "0.2.0",
-  "description": "Pick any element to hear it read aloud with word-by-word highlighting.",
+  "version": "1.0.0",
+  "description": "__MSG_extDescription__",
+  "default_locale": "en",
   "permissions": [
     "storage",
-    "debugger",
     "activeTab",
     "tabs",
     "scripting"

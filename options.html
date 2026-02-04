@@ -8,28 +8,28 @@
 </head>
 <body>
   <main class="wrap">
-    <h1>Immersive Speak</h1>
-    <p class="sub">Set your Groq API key and defaults for speech with word highlighting.</p>
+    <h1 data-i18n="optionsTitle">Immersive Speak</h1>
+    <p class="sub" data-i18n="optionsSubtitle">Set your Groq API key and defaults for speech with word highlighting.</p>
 
     <form id="options-form">
       <label>
-        <span>Groq API Key</span>
+        <span data-i18n="labelApiKey">Groq API Key</span>
         <input type="password" id="api_key" placeholder="gsk_..." autocomplete="off" />
       </label>
 
       <div class="grid">
         <label>
-          <span>TTS Model</span>
+          <span data-i18n="labelTtsModel">TTS Model</span>
           <input type="text" id="tts_model" placeholder="canopylabs/orpheus-v1-english" />
         </label>
 
         <label>
-          <span>Voice</span>
+          <span data-i18n="labelVoice">Voice</span>
           <input type="text" id="tts_voice" placeholder="troy" />
         </label>
 
         <label>
-          <span>Audio Format</span>
+          <span data-i18n="labelAudioFormat">Audio Format</span>
           <select id="tts_format">
             <option value="wav">wav</option>
             <option value="mp3">mp3</option>
@@ -40,47 +40,61 @@
         </label>
 
         <label>
-          <span>STT Model</span>
+          <span data-i18n="labelSttModel">STT Model</span>
           <input type="text" id="stt_model" placeholder="whisper-large-v3-turbo" />
         </label>
 
         <label>
-          <span>STT Language (optional)</span>
-          <input type="text" id="stt_language" placeholder="en" />
+          <span data-i18n="labelSttLanguage">STT Language (auto-detected)</span>
+          <input type="text" id="stt_language" placeholder="auto" />
         </label>
 
         <label>
-          <span>Max Characters per Chunk</span>
+          <span data-i18n="labelMaxChars">Max Characters per Chunk</span>
           <input type="number" id="max_chars" min="50" max="1000" step="10" />
         </label>
 
         <label>
-          <span>Agent Model</span>
+          <span data-i18n="labelAgentModel">Agent Model</span>
           <input type="text" id="agent_model" placeholder="moonshotai/kimi-k2-instruct-0905" />
         </label>
       </div>
 
       <label class="checkbox">
         <input type="checkbox" id="auto_speak" />
-        <span>Auto-speak when I select a paragraph</span>
+        <span data-i18n="labelAutoSpeak">Auto-speak when I select a paragraph</span>
       </label>
 
       <label class="checkbox">
         <input type="checkbox" id="agent_mode" />
-        <span>Use agent to pick readable content on toolbar click</span>
+        <span data-i18n="labelAgentMode">Use agent to pick readable content on toolbar click</span>
       </label>
 
       <label class="checkbox">
         <input type="checkbox" id="speech_mode" />
-        <span>Speech mode: add play button instead of immersive highlighting</span>
+        <span data-i18n="labelSpeechMode">Speech mode: add play button instead of immersive highlighting</span>
+      </label>
+
+      <label class="checkbox">
+        <input type="checkbox" id="analytics_opt_in" />
+        <span data-i18n="labelAnalyticsOptIn">Share anonymous usage analytics to improve the extension</span>
       </label>
 
       <div class="actions">
-        <button type="submit">Save</button>
-        <button type="button" id="reset-btn" class="secondary">Reset to Defaults</button>
+        <button type="submit" data-i18n="btnSave">Save</button>
+        <button type="button" id="reset-btn" class="secondary" data-i18n="btnReset">Reset to Defaults</button>
         <span id="status" role="status" aria-live="polite"></span>
       </div>
     </form>
+
+    <section class="cache-section">
+      <h2 data-i18n="cacheTitle">Audio Cache</h2>
+      <p class="sub" data-i18n="cacheDescription">Cached TTS results are stored locally to speed up repeated playback.</p>
+      <div class="cache-controls">
+        <button type="button" id="clear-cache-btn" class="secondary" data-i18n="btnClearCache">Clear Cache</button>
+        <span id="cache-status" role="status" aria-live="polite"></span>
+      </div>
+    </section>
   </main>
 
   <script src="shared.js"></script>

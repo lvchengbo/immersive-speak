@@ -11,7 +11,8 @@ const GROQ_DEFAULTS = {
   auto_speak: true,
   agent_mode: true,
   agent_model: "moonshotai/kimi-k2-instruct-0905",
-  speech_mode: false
+  speech_mode: false,
+  analytics_opt_in: false
 };
 
 const GROQ_MESSAGES = {
@@ -21,7 +22,18 @@ const GROQ_MESSAGES = {
   PORT: "groq-tts",
   AGENT_START: "groq-tts-agent-start",
   AGENT_SELECT: "groq-tts-agent-select",
-  SPEECH_TTS: "groq-tts-speech-tts"
+  SPEECH_TTS: "groq-tts-speech-tts",
+  PICKER_START: "groq-tts-picker-start",
+  PICKER_STOP: "groq-tts-picker-stop"
 };
 
 const GROQ_TARGET_ATTR = "data-groq-tts-target";
+
+/** Helper to get i18n message with fallback */
+const i18n = (key, substitutions) => {
+  if (typeof chrome !== "undefined" && chrome.i18n && chrome.i18n.getMessage) {
+    const msg = chrome.i18n.getMessage(key, substitutions);
+    if (msg) return msg;
+  }
+  return key;
+};

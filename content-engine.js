@@ -1,5 +1,6 @@
 /* Immersive Speak — main engine (lazily injected by background on first activation).
-   Handles TTS streaming playback, word-by-word highlighting via CSS Custom Highlight API, and keyboard nav. */
+   Handles TTS streaming playback, word-by-word highlighting via CSS Custom Highlight API,
+   element picker, floating mini-player, and keyboard nav. */
 (() => {
   if (window.__groqTtsEngine) return;
 
@@ -24,11 +25,23 @@
   let agentRunToken = 0;
   const speechEntries = new Set();
 
+  // ─── Picker state ──────────────────────────────────────────────────
+  let pickerActive = false;
+  let pickerOverlay = null;
+  let pickerTarget = null;
+
+  // ─── Mini-player state ─────────────────────────────────────────────
+  let miniPlayerEl = null;
+
   const SPEECH_ICON_PLAY = '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M4 2l10 6-10 6z"/></svg>';
   const SPEECH_ICON_PAUSE = '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M3 1h3v14H3zm7 0h3v14h-3z"/></svg>';
   const SPEECH_ICON_LOADING = '<svg viewBox="0 0 16 16" width="12" height="12" class="groq-tts-speech-spin"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="25 12"/></svg>';
+  const MINI_ICON_PREV = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M13 2v12L5 8z"/><rect x="2" y="2" width="2" height="12"/></svg>';
+  const MINI_ICON_NEXT = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M3 2v12l8-6z"/><rect x="12" y="2" width="2" height="12"/></svg>';
+  const MINI_ICON_STOP = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>';
 
   injectStyles();
+  injectAriaLiveRegion();
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
@@ -44,6 +57,7 @@
 
   document.addEventListener("keydown", evt => {
     if (evt.key === "Escape") {
+      if (pickerActive) { stopPicker(); return; }
       speechCleanupAll();
       stopSession("cancelled");
       return;
@@ -52,13 +66,27 @@
   });
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    if (!msg || (msg.type !== GROQ_MESSAGES.START && msg.type !== GROQ_MESSAGES.AGENT_START)) return;
+    if (!msg) return;
+
+    // ── Picker messages ──
+    if (msg.type === GROQ_MESSAGES.PICKER_START) {
+      startPicker();
+      sendResponse({ ok: true });
+      return;
+    }
+    if (msg.type === GROQ_MESSAGES.PICKER_STOP) {
+      stopPicker();
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (msg.type !== GROQ_MESSAGES.START && msg.type !== GROQ_MESSAGES.AGENT_START) return;
 
     if (msg.type === GROQ_MESSAGES.START) {
       (async () => {
         const target = document.querySelector(TARGET_SELECTOR);
         if (!target) {
-          showToast("No element was selected.", true, 2500);
+          showToast(i18n("toastNoElement"), true, 2500);
           sendResponse({ ok: false });
           return;
         }
@@ -66,7 +94,7 @@
 
         const text = (target.textContent || "").trim();
         if (!text) {
-          showToast("Selected element has no text.", true, 2500);
+          showToast(i18n("toastNoText"), true, 2500);
           sendResponse({ ok: false });
           return;
         }
@@ -96,6 +124,133 @@
     })();
     return true;
   });
+
+  // ─── Element Picker (replaces CDP debugger) ────────────────────────
+
+  function startPicker() {
+    if (pickerActive) return;
+    pickerActive = true;
+
+    pickerOverlay = document.createElement("div");
+    pickerOverlay.className = "groq-tts-picker-overlay";
+    pickerOverlay.setAttribute("aria-hidden", "true");
+    document.documentElement.appendChild(pickerOverlay);
+
+    document.addEventListener("mousemove", pickerMouseMove, true);
+    document.addEventListener("click", pickerClick, true);
+
+    showToast(i18n("toastPickerHint"), false, 3000);
+  }
+
+  function stopPicker() {
+    if (!pickerActive) return;
+    pickerActive = false;
+    pickerTarget = null;
+
+    document.removeEventListener("mousemove", pickerMouseMove, true);
+    document.removeEventListener("click", pickerClick, true);
+
+    if (pickerOverlay) { pickerOverlay.remove(); pickerOverlay = null; }
+
+    // Notify background that picker was stopped
+    try {
+      chrome.runtime.sendMessage({ type: GROQ_MESSAGES.PICKER_STOP });
+    } catch (_) {}
+  }
+
+  function pickerMouseMove(e) {
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    if (!el || el === pickerOverlay || el.closest(".groq-tts-picker-overlay")) return;
+
+    pickerTarget = el;
+    const rect = el.getBoundingClientRect();
+    if (pickerOverlay) {
+      pickerOverlay.style.top = (rect.top + window.scrollY) + "px";
+      pickerOverlay.style.left = (rect.left + window.scrollX) + "px";
+      pickerOverlay.style.width = rect.width + "px";
+      pickerOverlay.style.height = rect.height + "px";
+      pickerOverlay.style.display = "block";
+    }
+  }
+
+  function pickerClick(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+
+    const target = pickerTarget;
+    stopPicker();
+
+    if (!target) return;
+
+    const text = (target.textContent || "").trim();
+    if (!text) {
+      showToast(i18n("toastNoText"), true, 2500);
+      return;
+    }
+
+    target.setAttribute(TARGET_ATTR, "true");
+
+    (async () => {
+      const settings = await getLocalSettings();
+      if (settings.speech_mode) {
+        if (session) stopSession("restart");
+        speechModeActivate(target);
+        return;
+      }
+      target.removeAttribute(TARGET_ATTR);
+      if (session) stopSession("restart");
+      await speakParagraph(target, settings.max_chars);
+    })();
+  }
+
+  // ─── Floating Mini-Player ──────────────────────────────────────────
+
+  function showMiniPlayer() {
+    if (miniPlayerEl) { miniPlayerEl.classList.add("show"); return; }
+
+    const mp = document.createElement("div");
+    mp.className = "groq-tts-miniplayer";
+    mp.setAttribute("role", "toolbar");
+    mp.setAttribute("aria-label", "Immersive Speak controls");
+
+    const btnPrev = makeBtn(MINI_ICON_PREV, i18n("miniPlayerPrev"), () => handleRoamNavigation(-1));
+    const btnPlayPause = makeBtn(SPEECH_ICON_PAUSE, i18n("miniPlayerPause"), () => togglePlayPause());
+    btnPlayPause.id = "groq-tts-mp-playpause";
+    const btnNext = makeBtn(MINI_ICON_NEXT, i18n("miniPlayerNext"), () => handleRoamNavigation(1));
+    const btnStop = makeBtn(MINI_ICON_STOP, i18n("miniPlayerStop"), () => {
+      speechCleanupAll();
+      stopSession("cancelled");
+    });
+
+    mp.append(btnPrev, btnPlayPause, btnNext, btnStop);
+    document.documentElement.appendChild(mp);
+    miniPlayerEl = mp;
+    requestAnimationFrame(() => mp.classList.add("show"));
+  }
+
+  function hideMiniPlayer() {
+    if (!miniPlayerEl) return;
+    miniPlayerEl.classList.remove("show");
+  }
+
+  function updateMiniPlayerState(playing) {
+    if (!miniPlayerEl) return;
+    const btn = miniPlayerEl.querySelector("#groq-tts-mp-playpause");
+    if (!btn) return;
+    btn.innerHTML = playing ? SPEECH_ICON_PAUSE : SPEECH_ICON_PLAY;
+    btn.setAttribute("aria-label", playing ? i18n("miniPlayerPause") : i18n("miniPlayerPlay"));
+  }
+
+  function makeBtn(iconHtml, label, onClick) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "groq-tts-mp-btn";
+    btn.innerHTML = iconHtml;
+    btn.setAttribute("aria-label", label);
+    btn.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); onClick(); });
+    return btn;
+  }
 
   // ─── Session factory ────────────────────────────────────────────────
 
@@ -263,7 +418,8 @@
     session = createSession(paragraph, words);
     session.generateIndicator = generateIndicator;
 
-    showToast("Generating speech...", false, 1200);
+    showToast(i18n("toastGenerating"), false, 1200);
+    showMiniPlayer();
 
     // Promise resolves when all chunks have been played
     const allPlayed = new Promise(resolve => { session._resolve = resolve; });
@@ -287,7 +443,7 @@
       onDisconnect: () => {
         if (!allDelivered && session && !session.cancelled) {
           stopSession("error");
-          showToast("Connection to background lost.", true, 3000);
+          showToast(i18n("toastConnectionLost"), true, 3000);
         }
       }
     });
@@ -531,7 +687,6 @@
     if (session) {
       session.highlight.currentWordIndex = wordIndex;
       if (session.roam?.active) {
-        // wordIndex is chunk-relative; convert to element-relative
         const el = session.roam.currentElement;
         const state = el ? session.roam.elements.get(el) : null;
         if (state) {
@@ -585,6 +740,7 @@
       URL.revokeObjectURL(a.blobUrl);
       a.blobUrl = null;
     }
+    updateMiniPlayerState(false);
   }
 
   async function playChunk(result, words) {
@@ -632,6 +788,7 @@
         audio.onended = null;
         audio.onerror = null;
         audio.onloadedmetadata = null;
+        updateMiniPlayerState(false);
         resolve();
       };
 
@@ -680,6 +837,7 @@
               session.chunks.pendingHighlightIndex = null;
               session.chunks.pendingStartIndex = null;
             }
+            updateMiniPlayerState(true);
             startHL();
           } catch (err) {
             if (err?.name === "NotAllowedError" && !fromGesture) {
@@ -703,14 +861,14 @@
                   document.addEventListener(type, handler, true);
                 }
                 showToast(
-                  "Audio playback is blocked. Click Resume or the page to continue.",
+                  i18n("toastAudioBlocked"),
                   true, 8000,
-                  { label: "Resume", onClick: resume }
+                  { label: i18n("btnResume"), onClick: resume }
                 );
               }
               return;
             }
-            showToast("Audio playback failed. Try again.", true, 3500);
+            showToast(i18n("toastAudioFailed"), true, 3500);
             cleanup();
           }
         };
@@ -998,7 +1156,6 @@
 
     let index = roam.currentWordIndex;
     if (index == null) {
-      // Derive element-relative index from chunk-relative highlight position
       const activeWords = session.highlight.activeWords;
       const hlIdx = session.highlight.currentWordIndex;
       if (activeWords && hlIdx != null && hlIdx >= 0 && hlIdx < activeWords.length) {
@@ -1126,7 +1283,7 @@
         if (!session || session.cancelled) return;
         if (session.roam.debounceToken !== token) return;
         clearGenerateIndicator();
-        showToast("Connection to background lost.", true, 3000);
+        showToast(i18n("toastConnectionLost"), true, 3000);
       }
     });
   }
@@ -1138,7 +1295,7 @@
   async function startAgentRead() {
     const settings = await getLocalSettings();
     if (!settings.agent_mode) {
-      showToast("Agent mode is disabled in options.", true, 2200);
+      showToast(i18n("toastAgentDisabled"), true, 2200);
       return false;
     }
 
@@ -1147,11 +1304,11 @@
 
     const candidates = collectCandidateBlocks();
     if (!candidates.length) {
-      showToast("No readable content found.", true, 2200);
+      showToast(i18n("toastNoContent"), true, 2200);
       return false;
     }
 
-    showToast("Analyzing page...", false, 1200);
+    showToast(i18n("toastAnalyzing"), false, 1200);
     const agentCandidates = candidates.length > AGENT_MAX_BLOCKS
       ? [...candidates].sort((a, b) => b.words - a.words).slice(0, AGENT_MAX_BLOCKS)
       : candidates;
@@ -1182,10 +1339,10 @@
         .sort((a, b) => b.words - a.words)
         .slice(0, Math.min(3, candidates.length));
       if (!fallback.length) {
-        showToast("Agent selection empty.", true, 2200);
+        showToast(i18n("toastAgentEmpty"), true, 2200);
         return false;
       }
-      showToast("Agent returned no results. Reading top sections.", true, 2200);
+      showToast(i18n("toastAgentFallback"), true, 2200);
       ordered = fallback;
     }
 
@@ -1300,13 +1457,15 @@
           session.audio.userPaused = false;
           session.done = false;
         }
+        updateMiniPlayerState(true);
         startHighlightLoop(audio, session.highlight.wordEntries);
       }).catch(() => {
-        showToast("Audio playback is blocked. Click anywhere to resume.", true, 4500);
+        showToast(i18n("toastAudioBlocked"), true, 4500);
       });
     } else {
       audio.pause();
       if (session) session.audio.userPaused = true;
+      updateMiniPlayerState(false);
     }
   }
 
@@ -1447,7 +1606,8 @@
     const btn = document.createElement("button");
     btn.className = "groq-tts-speech-btn";
     btn.type = "button";
-    btn.setAttribute("aria-label", "Listen");
+    btn.setAttribute("aria-label", i18n("ariaListen"));
+    btn.setAttribute("aria-pressed", "false");
     btn.setAttribute("data-state", "idle");
     btn.innerHTML = SPEECH_ICON_PLAY;
 
@@ -1514,7 +1674,7 @@
         setSpeechBtnState(btn, "playing");
       } catch (err) {
         if (err?.name === "NotAllowedError") {
-          showToast("Audio blocked by browser. Click the page first.", true, 3500);
+          showToast(i18n("toastAudioBlocked"), true, 3500);
         }
         setSpeechBtnState(btn, "idle");
       }
@@ -1528,18 +1688,20 @@
 
   function setSpeechBtnState(btn, state) {
     btn.setAttribute("data-state", state);
+    const isPressed = state === "playing" || state === "loading";
+    btn.setAttribute("aria-pressed", String(isPressed));
     if (state === "playing") {
       btn.innerHTML = SPEECH_ICON_PAUSE;
-      btn.setAttribute("aria-label", "Pause");
+      btn.setAttribute("aria-label", i18n("ariaPause"));
     } else if (state === "loading") {
       btn.innerHTML = SPEECH_ICON_LOADING;
-      btn.setAttribute("aria-label", "Loading...");
+      btn.setAttribute("aria-label", i18n("ariaLoading"));
     } else if (state === "paused") {
       btn.innerHTML = SPEECH_ICON_PLAY;
-      btn.setAttribute("aria-label", "Resume");
+      btn.setAttribute("aria-label", i18n("ariaResume"));
     } else {
       btn.innerHTML = SPEECH_ICON_PLAY;
-      btn.setAttribute("aria-label", "Listen");
+      btn.setAttribute("aria-label", i18n("ariaListen"));
     }
   }
 
@@ -1564,7 +1726,7 @@
   async function startAgentSpeechMode() {
     const settings = await getLocalSettings();
     if (!settings.agent_mode) {
-      showToast("Agent mode is disabled in options.", true, 2200);
+      showToast(i18n("toastAgentDisabled"), true, 2200);
       return false;
     }
 
@@ -1573,11 +1735,11 @@
 
     const candidates = collectCandidateBlocks();
     if (!candidates.length) {
-      showToast("No readable content found.", true, 2200);
+      showToast(i18n("toastNoContent"), true, 2200);
       return false;
     }
 
-    showToast("Analyzing page...", false, 1200);
+    showToast(i18n("toastAnalyzing"), false, 1200);
     const agentCandidates = candidates.length > AGENT_MAX_BLOCKS
       ? [...candidates].sort((a, b) => b.words - a.words).slice(0, AGENT_MAX_BLOCKS)
       : candidates;
@@ -1608,10 +1770,10 @@
         .sort((a, b) => b.words - a.words)
         .slice(0, Math.min(3, candidates.length));
       if (!fallback.length) {
-        showToast("Agent selection empty.", true, 2200);
+        showToast(i18n("toastAgentEmpty"), true, 2200);
         return false;
       }
-      showToast("Agent returned no results. Adding top sections.", true, 2200);
+      showToast(i18n("toastAgentFallback"), true, 2200);
       ordered = fallback;
     }
 
@@ -1666,6 +1828,11 @@
       session = null;
     }
 
+    // Hide mini-player unless we just finished (keep it for done state)
+    if (reason !== "done") {
+      hideMiniPlayer();
+    }
+
     if (reason !== "restart") notifyPickerResume();
   }
 
@@ -1710,11 +1877,36 @@
     return settingsPromise;
   }
 
+  // ─── Accessible aria-live region ───────────────────────────────────
+
+  let ariaLiveRegion = null;
+
+  function injectAriaLiveRegion() {
+    if (ariaLiveRegion) return;
+    ariaLiveRegion = document.createElement("div");
+    ariaLiveRegion.id = "groq-tts-aria-live";
+    ariaLiveRegion.setAttribute("aria-live", "polite");
+    ariaLiveRegion.setAttribute("aria-atomic", "true");
+    ariaLiveRegion.setAttribute("role", "status");
+    ariaLiveRegion.style.cssText = "position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;";
+    document.documentElement.appendChild(ariaLiveRegion);
+  }
+
+  function announceToScreenReader(text) {
+    if (!ariaLiveRegion) injectAriaLiveRegion();
+    ariaLiveRegion.textContent = "";
+    requestAnimationFrame(() => { ariaLiveRegion.textContent = text; });
+  }
+
   // ─── Toast notifications ────────────────────────────────────────────
 
   function showToast(message, isError, timeout, action) {
+    // Announce to screen readers
+    announceToScreenReader(message);
+
     const toast = document.createElement("div");
     toast.className = "groq-tts-toast";
+    toast.setAttribute("role", "alert");
     if (action && action.label && action.onClick) {
       toast.classList.add("has-action");
       const msg = document.createElement("span");
@@ -1919,6 +2111,63 @@
           background: rgba(255, 214, 102, 0.2);
         }
       }
+      /* ── Element Picker overlay ── */
+      .groq-tts-picker-overlay {
+        position: absolute;
+        display: none;
+        pointer-events: none;
+        border: 2px solid rgba(245, 158, 11, 0.9);
+        background: rgba(255, 230, 100, 0.18);
+        border-radius: 4px;
+        z-index: 2147483646;
+        transition: top 60ms ease, left 60ms ease, width 60ms ease, height 60ms ease;
+      }
+      /* ── Floating Mini-Player ── */
+      .groq-tts-miniplayer {
+        position: fixed;
+        bottom: 20px;
+        left: 50%;
+        transform: translateX(-50%) translateY(60px);
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 6px 10px;
+        background: rgba(30, 30, 30, 0.94);
+        border-radius: 999px;
+        z-index: 2147483647;
+        opacity: 0;
+        transition: opacity 200ms ease, transform 200ms ease;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+      }
+      .groq-tts-miniplayer.show {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+      }
+      .groq-tts-mp-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        padding: 0;
+        border: none;
+        border-radius: 50%;
+        background: transparent;
+        color: #fff;
+        cursor: pointer;
+        appearance: none;
+        outline: none;
+        transition: background-color 120ms ease;
+      }
+      .groq-tts-mp-btn:hover {
+        background: rgba(255, 255, 255, 0.15);
+      }
+      .groq-tts-mp-btn:focus-visible {
+        box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.8);
+      }
+      .groq-tts-mp-btn svg {
+        display: block;
+      }
     `;
     document.documentElement.appendChild(style);
   }
@@ -1927,6 +2176,8 @@
 
   window.__groqTtsEngine = {
     handleSelection,
+    startPicker,
+    stopPicker,
     activate(target) {
       (async () => {
         if (session) stopSession("restart");
@@ -1953,6 +2204,8 @@
         }
       } else if (pending.type === GROQ_MESSAGES.AGENT_START) {
         startAgentRead();
+      } else if (pending.type === GROQ_MESSAGES.PICKER_START) {
+        startPicker();
       }
     }
 
